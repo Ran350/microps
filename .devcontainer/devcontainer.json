@@ -1,0 +1,11 @@
+{
+    "name": "microps",
+    "build": {
+        "dockerfile": "./Dockerfile"
+    },
+    "runArgs": [
+        // "--privileged",
+        "--cap-add=NET_ADMIN"
+    ],
+    "remoteUser": "root"
+}

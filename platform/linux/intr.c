@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "net.h"
 #include "platform.h"
 #include "util.h"
 
@@ -38,7 +39,6 @@ int intr_request_irq(unsigned int irq,
             }
         }
     }
-
     entry = memory_alloc(sizeof(*entry));
     if (!entry) {
         errorf("memory_alloc() failure");
@@ -53,7 +53,6 @@ int intr_request_irq(unsigned int irq,
     irqs = entry;
     sigaddset(&sigmask, irq);
     debugf("registered: irq=%u, name=%s", irq, name);
-
     return 0;
 }
 
@@ -74,6 +73,9 @@ static void *intr_thread(void *arg) {
         switch (sig) {
             case SIGHUP:
                 terminate = 1;
+                break;
+            case SIGUSR1:
+                net_softirq_handler();
                 break;
             default:
                 for (entry = irqs; entry; entry = entry->next) {
@@ -120,5 +122,6 @@ int intr_init(void) {
     pthread_barrier_init(&barrier, NULL, 2);
     sigemptyset(&sigmask);
     sigaddset(&sigmask, SIGHUP);
+    sigaddset(&sigmask, SIGUSR1);
     return 0;
 }

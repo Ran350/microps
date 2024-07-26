@@ -25,12 +25,20 @@ struct ip_hdr {
     uint8_t options[];
 };
 
+struct ip_protocol {
+    struct ip_protocol *next;
+    uint8_t type;
+    void (*handler)(const uint8_t *data, size_t len, ip_addr_t src,
+                    ip_addr_t dst, struct ip_iface *iface);
+};
+
 const ip_addr_t IP_ADDR_ANY = 0x00000000;       /* 0.0.0.0 */
 const ip_addr_t IP_ADDR_BROADCAST = 0xffffffff; /* 255.255.255.255 */
 
 /* NOTE: if you want to add/delete the entries after net_run(), you need to
  * protect these lists with a mutex. */
 static struct ip_iface *ifaces;
+static struct ip_protocol *protocols;
 
 int ip_addr_pton(const char *p, ip_addr_t *n) {
     char *sp, *ep;
@@ -131,7 +139,6 @@ int ip_iface_register(struct net_device *dev, struct ip_iface *iface) {
     }
     iface->next = ifaces;
     ifaces = iface;
-
     infof("registered: dev=%s, unicast=%s, netmask=%s, broadcast=%s", dev->name,
           ip_addr_ntop(iface->unicast, addr1, sizeof(addr1)),
           ip_addr_ntop(iface->netmask, addr2, sizeof(addr2)),
@@ -150,12 +157,39 @@ struct ip_iface *ip_iface_select(ip_addr_t addr) {
     return entry;
 }
 
+/* NOTE: must not be call after net_run() */
+int ip_protocol_register(uint8_t type,
+                         void (*handler)(const uint8_t *data, size_t len,
+                                         ip_addr_t src, ip_addr_t dst,
+                                         struct ip_iface *iface)) {
+    struct ip_protocol *entry;
+
+    for (entry = protocols; entry; entry = entry->next) {
+        if (entry->type == type) {
+            errorf("already exists, type=%u", type);
+            return -1;
+        }
+    }
+    entry = memory_alloc(sizeof(*entry));
+    if (!entry) {
+        errorf("memory_alloc() failure");
+        return -1;
+    }
+    entry->type = type;
+    entry->handler = handler;
+    entry->next = protocols;
+    protocols = entry;
+    infof("registered, type=%u", entry->type);
+    return 0;
+}
+
 static void ip_input(const uint8_t *data, size_t len, struct net_device *dev) {
     struct ip_hdr *hdr;
     uint8_t v;
     uint16_t hlen, total, offset;
     struct ip_iface *iface;
     char addr[IP_ADDR_STR_LEN];
+    struct ip_protocol *proto;
 
     if (len < IP_HDR_SIZE_MIN) {
         errorf("too short");
@@ -187,21 +221,29 @@ static void ip_input(const uint8_t *data, size_t len, struct net_device *dev) {
         errorf("fragments does not support");
         return;
     }
-
     iface = (struct ip_iface *)net_device_get_iface(dev, NET_IFACE_FAMILY_IP);
-    if (iface == NULL) {
+    if (!iface) {
         /* iface is not registered to the device */
         return;
     }
-    if ((hdr->dst != iface->unicast) && (hdr->dst != IP_ADDR_BROADCAST) &&
-        (hdr->dst != iface->broadcast)) {
-        /* for other host */
-        return;
+    if (hdr->dst != iface->unicast) {
+        if (hdr->dst != iface->broadcast && hdr->dst != IP_ADDR_BROADCAST) {
+            /* for other host */
+            return;
+        }
     }
     debugf("dev=%s, iface=%s, protocol=%u, total=%u", dev->name,
            ip_addr_ntop(iface->unicast, addr, sizeof(addr)), hdr->protocol,
            total);
     ip_dump(data, total);
+    for (proto = protocols; proto; proto = proto->next) {
+        if (proto->type == hdr->protocol) {
+            proto->handler((uint8_t *)hdr + hlen, total - hlen, hdr->src,
+                           hdr->dst, iface);
+            return;
+        }
+    }
+    /* unsupported protocol */
 }
 
 static int ip_output_device(struct ip_iface *iface, const uint8_t *data,
@@ -217,7 +259,6 @@ static int ip_output_device(struct ip_iface *iface, const uint8_t *data,
             return -1;
         }
     }
-
     return net_device_output(NET_IFACE(iface)->dev, NET_PROTOCOL_TYPE_IP, data,
                              len, hwaddr);
 }
@@ -231,7 +272,6 @@ static ssize_t ip_output_core(struct ip_iface *iface, uint8_t protocol,
     char addr[IP_ADDR_STR_LEN];
 
     hdr = (struct ip_hdr *)buf;
-
     hlen = IP_HDR_SIZE_MIN;
     hdr->vhl = (IP_VERSION_IPV4 << 4) | (hlen >> 2);
     hdr->tos = 0;
@@ -241,9 +281,10 @@ static ssize_t ip_output_core(struct ip_iface *iface, uint8_t protocol,
     hdr->offset = hton16(offset);
     hdr->ttl = 255;
     hdr->protocol = protocol;
-    hdr->sum = cksum16((uint16_t *)hdr, hlen, 0);
+    hdr->sum = 0;
     hdr->src = src;
     hdr->dst = dst;
+    hdr->sum = cksum16((uint16_t *)hdr, hlen, 0);
 
     memcpy(hdr + 1, data, len);
 
@@ -275,12 +316,12 @@ ssize_t ip_output(uint8_t protocol, const uint8_t *data, size_t len,
         return -1;
     } else { /* NOTE: I'll rewrite this block later. */
         iface = ip_iface_select(src);
-        if (iface == NULL) {
+        if (!iface) {
             errorf("iface not found, src=%s",
                    ip_addr_ntop(src, addr, sizeof(addr)));
             return -1;
         }
-        if (((dst & iface->netmask) != (iface->unicast & iface->netmask)) &&
+        if ((dst & iface->netmask) != (iface->unicast & iface->netmask) &&
             dst != IP_ADDR_BROADCAST) {
             errorf("not reached, dst=%s",
                    ip_addr_ntop(src, addr, sizeof(addr)));

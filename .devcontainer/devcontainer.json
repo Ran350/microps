@@ -5,7 +5,15 @@
     },
     "runArgs": [
         // "--privileged",
-        "--cap-add=NET_ADMIN"
+        "--cap-add=NET_ADMIN",
+        "--sysctl=net.ipv4.ip_forward=1"
     ],
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "terminal.integrated.shell.linux": "/bin/bash"
+            }
+        }
+    },
     "remoteUser": "root"
 }

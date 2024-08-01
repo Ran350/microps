@@ -5,7 +5,8 @@ RUN apt-get update && apt-get install -y \
     git \
     iproute2 \
     iputils-ping \
-    netcat-openbsd
+    netcat-openbsd \
+    iptables
 
 RUN mkdir -p /dev/net && \
     mknod /dev/net/tun c 10 200 && \
